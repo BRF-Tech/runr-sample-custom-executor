@@ -1,0 +1,3 @@
+# The tools of scripts/validate.sh and scripts/build-catalog.sh (and of CI): pip install -r requirements.txt
+check-jsonschema==0.38.2
+PyYAML==6.0.3

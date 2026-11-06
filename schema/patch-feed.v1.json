@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/BRF-Tech/runr-runtimes/blob/main/schema/patch-feed.v1.json",
+  "title": "RunR patch feed, schema 1",
+  "description": "The patches of RunR's runtime images and the RunR platform releases that carry a level. Published as the OCI artifact ghcr.io/brf-tech/runr/runtime-patches:feed (one layer of application/vnd.runr.patch-feed.v1+json), signed with cosign. lib/feed.jq feed_problems checks what this schema cannot: unique ids, id = <runtime>-<version>-<tag>, the tag a patch of the version, at most 5 patches per runtime version, unique platform versions.",
+  "type": "object",
+  "required": ["schema", "generated_at", "patches", "platform"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "description": "The schema version of the document.",
+      "const": 1
+    },
+    "generated_at": {
+      "description": "When this version of the feed was generated.",
+      "$ref": "#/$defs/time"
+    },
+    "patches": {
+      "description": "Per runtime version (floating tag), its newest patches; newest first.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/patch" }
+    },
+    "platform": {
+      "description": "The newest RunR platform releases that carry a level (at most 10); newest first.",
+      "type": "array",
+      "maxItems": 10,
+      "items": { "$ref": "#/$defs/platform" }
+    }
+  },
+  "$defs": {
+    "time": {
+      "description": "A UTC time to the second.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$",
+      "format": "date-time"
+    },
+    "level": {
+      "description": "How urgent the patch or release is: routine (rebuilds, upstream releases), security, critical, zero-day.",
+      "enum": ["routine", "security", "critical", "zero-day"]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "^[^\\r\\n\\t]+$"
+    },
+    "reason": {
+      "description": "Why the patch or release exists, short, in English and Turkish.",
+      "type": "object",
+      "required": ["en", "tr"],
+      "additionalProperties": false,
+      "properties": {
+        "en": { "$ref": "#/$defs/text" },
+        "tr": { "$ref": "#/$defs/text" }
+      }
+    },
+    "url": {
+      "description": "The advisory or release notes.",
+      "type": "string",
+      "maxLength": 2000,
+      "pattern": "^https://[^\\s]+$"
+    },
+    "patch": {
+      "type": "object",
+      "required": ["id", "runtime", "version", "tag", "image", "digest", "level", "reason", "cves", "upstream", "published_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "<runtime>-<version>-<tag>.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*-[0-9][0-9A-Za-z._-]*-r[1-9][0-9]*$"
+        },
+        "runtime": {
+          "description": "The runtime of RunR's catalog: python, nodejs, go, php.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "version": {
+          "description": "The floating tag the patch belongs to (major.minor).",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+(-[a-z0-9]+)?$"
+        },
+        "tag": {
+          "description": "The immutable patch tag: <full upstream version>-r<n>.",
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[0-9]+\\.[0-9]+[0-9A-Za-z._-]*-r[1-9][0-9]*$"
+        },
+        "image": {
+          "description": "The image repository, without a tag.",
+          "type": "string",
+          "pattern": "^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$"
+        },
+        "digest": {
+          "description": "The digest of the patch's image index.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "level": { "$ref": "#/$defs/level" },
+        "reason": { "$ref": "#/$defs/reason" },
+        "cves": {
+          "description": "The vulnerabilities the patch fixes: CVE or GHSA ids.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(CVE-[0-9]{4}-[0-9]{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3})$"
+          }
+        },
+        "url": { "$ref": "#/$defs/url" },
+        "upstream": {
+          "description": "The upstream release the image runs: \"PHP 8.3.36\".",
+          "$ref": "#/$defs/text"
+        },
+        "published_at": { "$ref": "#/$defs/time" },
+        "deadline_at": {
+          "description": "When instances must run the patch (required for critical and zero-day).",
+          "$ref": "#/$defs/time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["level"],
+            "properties": { "level": { "enum": ["critical", "zero-day"] } }
+          },
+          "then": { "required": ["deadline_at"] }
+        }
+      ]
+    },
+    "platform": {
+      "type": "object",
+      "required": ["version", "level", "reason", "published_at"],
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "description": "The RunR release.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.]+)?$"
+        },
+        "level": { "$ref": "#/$defs/level" },
+        "reason": { "$ref": "#/$defs/reason" },
+        "url": { "$ref": "#/$defs/url" },
+        "published_at": { "$ref": "#/$defs/time" }
+      }
+    }
+  }
+}

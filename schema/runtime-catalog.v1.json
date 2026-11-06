@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/BRF-Tech/runr-sample-custom-executor/blob/main/schema/runtime-catalog.v1.json",
+  "title": "RunR runtime catalog, schema 1",
+  "description": "The runtime manifests of a repository as one signed document: the single layer (media type application/vnd.runr.runtime-catalog.v1+json) of an OCI artifact of the same artifactType with an empty config, pushed with oras and signed with cosign (scripts/build-catalog.sh, scripts/push-signed.sh). RunR reads it as an oci-catalog runtime source and verifies the signature with the source's public key before it trusts a word of it. Each manifest is also valid against schema/runtime.schema.json (scripts/build-catalog.sh checks that); patches follow the patch feed v1 (schema/patch-feed.v1.json).",
+  "type": "object",
+  "required": ["schema", "generated_at", "source", "runtimes"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "description": "The schema version of the document.",
+      "const": 1
+    },
+    "generated_at": {
+      "description": "When the catalog was built.",
+      "$ref": "#/$defs/time"
+    },
+    "source": {
+      "description": "Where the manifests come from: the repository and the commit they were read at.",
+      "type": "object",
+      "required": ["repository", "revision"],
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "revision": {
+          "description": "The git commit (sha-1 or sha-256), or a label for a catalog built outside git.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      }
+    },
+    "runtimes": {
+      "description": "One entry per runtimes/<id>/runtime.yaml, ordered by path.",
+      "type": "array",
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/runtime" }
+    },
+    "patches": {
+      "description": "Patches of this catalog's own runtimes (RunR ignores entries for other runtimes); the entries of the patch feed v1.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/patch" }
+    }
+  },
+  "$defs": {
+    "runtime": {
+      "type": "object",
+      "required": ["path", "manifest"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "The manifest's path in the repository: <path>/<id>/runtime.yaml.",
+          "type": "string",
+          "maxLength": 255,
+          "pattern": "^([A-Za-z0-9._-]+/)*[a-z][a-z0-9-]{0,31}/runtime\\.yaml$"
+        },
+        "manifest": {
+          "description": "runtime.yaml as JSON, the @file references of build.files inlined; strings stay strings (\"5.4\", \"2027-06-30\").",
+          "type": "object",
+          "required": ["apiVersion", "kind", "id"],
+          "properties": {
+            "apiVersion": { "const": "runr.sh/v1" },
+            "kind": { "const": "Runtime" },
+            "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" }
+          }
+        },
+        "files": {
+          "description": "Only for a runtime with a dockerfile version: the build context RunR uploads, every regular file of the runtime's directory but runtime.yaml (at most 50 files, 900 KB together).",
+          "type": "object",
+          "maxProperties": 50,
+          "propertyNames": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$" },
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "time": {
+      "description": "A UTC time to the second.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$",
+      "format": "date-time"
+    },
+    "level": {
+      "description": "How urgent the patch is: routine (rebuilds, upstream releases), security, critical, zero-day.",
+      "enum": ["routine", "security", "critical", "zero-day"]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "^[^\\r\\n\\t]+$"
+    },
+    "patch": {
+      "description": "A patch entry, as in the patch feed v1 (schema/patch-feed.v1.json, $defs/patch).",
+      "type": "object",
+      "required": ["id", "runtime", "version", "tag", "image", "digest", "level", "reason", "cves", "upstream", "published_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "<runtime>-<version>-<tag>.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*-[0-9][0-9A-Za-z._-]*-r[1-9][0-9]*$"
+        },
+        "runtime": {
+          "description": "A runtime id of this catalog.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "version": {
+          "description": "The version (floating tag) the patch belongs to (major.minor).",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+(-[a-z0-9]+)?$"
+        },
+        "tag": {
+          "description": "The immutable patch tag: <full upstream version>-r<n>.",
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[0-9]+\\.[0-9]+[0-9A-Za-z._-]*-r[1-9][0-9]*$"
+        },
+        "image": {
+          "description": "The image repository, without a tag.",
+          "type": "string",
+          "pattern": "^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$"
+        },
+        "digest": {
+          "description": "The digest of the patch's image (index or manifest).",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "level": { "$ref": "#/$defs/level" },
+        "reason": {
+          "description": "Why the patch exists, short, in English and Turkish.",
+          "type": "object",
+          "required": ["en", "tr"],
+          "additionalProperties": false,
+          "properties": {
+            "en": { "$ref": "#/$defs/text" },
+            "tr": { "$ref": "#/$defs/text" }
+          }
+        },
+        "cves": {
+          "description": "The vulnerabilities the patch fixes: CVE or GHSA ids.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(CVE-[0-9]{4}-[0-9]{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3})$"
+          }
+        },
+        "url": {
+          "description": "The advisory or release notes.",
+          "type": "string",
+          "maxLength": 2000,
+          "pattern": "^https://[^\\s]+$"
+        },
+        "upstream": {
+          "description": "The upstream release the image runs: \"Lua 5.4.8\".",
+          "$ref": "#/$defs/text"
+        },
+        "published_at": { "$ref": "#/$defs/time" },
+        "deadline_at": {
+          "description": "When projects must run the patch (required for critical and zero-day).",
+          "$ref": "#/$defs/time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["level"],
+            "properties": { "level": { "enum": ["critical", "zero-day"] } }
+          },
+          "then": { "required": ["deadline_at"] }
+        }
+      ]
+    }
+  }
+}
