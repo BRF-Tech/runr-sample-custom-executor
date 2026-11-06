@@ -1,0 +1,14 @@
+# Python with the tools of scripts/validate.sh, scripts/contract-test.sh and
+# scripts/build-catalog.sh: PyYAML and check-jsonschema, pinned in requirements.txt.
+name: Python tools
+description: python3, PyYAML and check-jsonschema
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.12'
+    - name: Install requirements.txt
+      shell: bash
+      run: pip install -r requirements.txt

@@ -1,0 +1,243 @@
+# Publishes what RunR reads from this repository as a runtime source:
+#
+#   1. The runtime images of the image versions, under the names the manifests give (they must be
+#      ghcr.io/<owner>/...): each one built, contract-tested (scripts/contract-test.sh) and then
+#      pushed - exactly the image the test ran - with the workflow's own GITHUB_TOKEN.
+#        - push to main, a v* tag, weekly: every image version; its version tag (5.4) moves to the
+#          new build, which picks up the base image's and the packages' fixes
+#        - by hand (Actions -> Publish -> Run workflow): one runtime or version and, with
+#          "revision", also the immutable patch tag <full version>-r<revision> (5.4.8-r2). The
+#          run's summary then shows the patches.json entry of that image (README: Ship a patch).
+#   2. Only when the secret COSIGN_PRIVATE_KEY exists (keys/README.md): the runtime catalog
+#      ghcr.io/<owner>/runr/sample-executor-catalog:stable (a v* tag: :<tag>) and the patch feed
+#      ghcr.io/<owner>/runr/sample-executor-patches:feed from patches.json, signed with cosign
+#      (scripts/build-catalog.sh, scripts/push-signed.sh). Main and v* tags only.
+#
+# New packages on ghcr.io start private: make them public in the package settings, or give RunR
+# registry credentials (README: Publish).
+name: Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: 'Runtime id (sample-lua); empty: every image version'
+        required: false
+        default: ''
+      version:
+        description: 'Version of that runtime (5.4); empty: all its image versions'
+        required: false
+        default: ''
+      revision:
+        description: 'Patch revision n: also push the immutable tag <full version>-r<n> (empty: the version tag only)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Manifests, catalog, patch feed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tools
+      - run: scripts/validate.sh
+      - run: |
+          scripts/build-catalog.sh -o "${RUNNER_TEMP}/catalog.json"
+          scripts/build-catalog.sh --feed -o "${RUNNER_TEMP}/patch-feed.json"
+
+  matrix:
+    name: Image versions to publish
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.matrix.outputs.images }}
+      any: ${{ steps.matrix.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tools
+      - id: matrix
+        env:
+          RUNTIME: ${{ inputs.runtime }}
+          VERSION: ${{ inputs.version }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          images=$(python3 scripts/lib/runr_sample.py matrix --images)
+          if [ -n "${RUNTIME}" ]; then
+            images=$(jq -c --arg r "$RUNTIME" --arg v "$VERSION" '[.[] | select(.runtime == $r and ($v == "" or .version == $v))]' <<< "$images")
+            if [ "$(jq length <<< "$images")" = 0 ]; then
+              echo "::error::${RUNTIME} ${VERSION}: no image version of that name (dockerfile versions are built by RunR, not published)"
+              exit 1
+            fi
+          elif [ -n "${VERSION}" ] || [ -n "${REVISION}" ]; then
+            echo "::error::version and revision go with a runtime"
+            exit 1
+          fi
+          echo "Images: ${images}"
+          echo "images=${images}" >> "$GITHUB_OUTPUT"
+          if [ "$(jq length <<< "$images")" -gt 0 ]; then echo "any=true" >> "$GITHUB_OUTPUT"; else echo "any=false" >> "$GITHUB_OUTPUT"; fi
+
+  images:
+    name: ${{ matrix.runtime }} ${{ matrix.version }}
+    needs: [validate, matrix]
+    if: needs.matrix.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.images) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tools
+      - name: The image is in this repository owner's namespace
+        env:
+          IMAGE: ${{ matrix.image }}
+          OWNER: ${{ github.repository_owner }}
+          RUNTIME: ${{ matrix.runtime }}
+        run: |
+          owner="${OWNER,,}"
+          case "$IMAGE" in
+            "ghcr.io/${owner}/"*) ;;
+            *)
+              echo "::error::runtimes/${RUNTIME}/runtime.yaml names ${IMAGE}; this workflow can push to ghcr.io/${owner}/ only. Replace the image names with ghcr.io/${owner}/... (README: Fork)"
+              exit 1 ;;
+          esac
+      - name: scripts/contract-test.sh (build and test the image to push)
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+          VERSION: ${{ matrix.version }}
+          IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          IMAGE_REVISION: ${{ github.sha }}
+        run: scripts/contract-test.sh "$RUNTIME" "$VERSION"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push
+        env:
+          IMAGE: ${{ matrix.image }}
+          RUNTIME: ${{ matrix.runtime }}
+          VERSION: ${{ matrix.version }}
+          PATCH_REVISION: ${{ inputs.revision }}
+        run: |
+          repository="${IMAGE%:*}"
+          docker push -q "$IMAGE"
+          digest="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" | grep -F "${repository}@" | head -n 1)"
+          digest="${digest##*@}"
+          echo "### ${IMAGE}" >> "$GITHUB_STEP_SUMMARY"
+          echo "pushed: \`${digest}\`" >> "$GITHUB_STEP_SUMMARY"
+          [ -n "$PATCH_REVISION" ] || exit 0
+
+          # The immutable patch tag: <full upstream version>-r<n>, never overwritten
+          if ! [[ "$PATCH_REVISION" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::revision ${PATCH_REVISION}: a number from 1"
+            exit 1
+          fi
+          upstream="$(docker run --rm --entrypoint cat "$IMAGE" /opt/runr/upstream)"
+          full="${upstream##* }"
+          case "$full" in
+            "${VERSION}".*|"${VERSION}") ;;
+            *) echo "::error::${IMAGE} runs ${upstream}, not ${VERSION}.x"; exit 1 ;;
+          esac
+          tag="${full}-r${PATCH_REVISION}"
+          if docker buildx imagetools inspect "${repository}:${tag}" >/dev/null 2>&1; then
+            echo "::error::${repository}:${tag} exists already: patch tags are immutable, run again with the next revision"
+            exit 1
+          fi
+          docker tag "$IMAGE" "${repository}:${tag}"
+          docker push -q "${repository}:${tag}"
+          python3 - "$RUNTIME" "$VERSION" "$tag" "$repository" "$digest" "$upstream" > entry.json <<'PY'
+          import datetime, json, sys
+          runtime, version, tag, image, digest, upstream = sys.argv[1:]
+          now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          print(json.dumps({
+              "id": f"{runtime}-{version}-{tag}", "runtime": runtime, "version": version, "tag": tag,
+              "image": image, "digest": digest, "level": "security",
+              "reason": {"en": "<why, in English>", "tr": "<why, in Turkish>"},
+              "cves": [], "upstream": upstream, "published_at": now,
+          }, indent=2))
+          PY
+          {
+            echo "patch tag: \`${repository}:${tag}\`"
+            echo
+            echo "The entry for patches.json (set level, reason and cves; deadline_at for critical and zero-day):"
+            echo '```json'
+            cat entry.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  signing-key:
+    name: Signing key
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.check.outputs.present }}
+    steps:
+      - id: check
+        env:
+          KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No COSIGN_PRIVATE_KEY secret: the signed catalog and patch feed are not published (keys/README.md)"
+          fi
+
+  catalog:
+    name: Signed catalog and patch feed
+    needs: [validate, images, signing-key]
+    if: >-
+      ${{ !cancelled() && needs.signing-key.outputs.present == 'true' && needs.validate.result == 'success'
+      && (needs.images.result == 'success' || needs.images.result == 'skipped')
+      && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: catalog
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tools
+      - uses: ./.github/actions/oci-tools
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Runtime catalog (signed)
+        env:
+          OWNER: ${{ github.repository_owner }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          tag=stable
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; fi
+          scripts/build-catalog.sh -o "${RUNNER_TEMP}/catalog.json"
+          scripts/push-signed.sh catalog "${RUNNER_TEMP}/catalog.json" "ghcr.io/${OWNER,,}/runr/sample-executor-catalog:${tag}"
+      - name: Patch feed (signed)
+        if: github.ref == 'refs/heads/main'
+        env:
+          OWNER: ${{ github.repository_owner }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          scripts/build-catalog.sh --feed -o "${RUNNER_TEMP}/patch-feed.json"
+          scripts/push-signed.sh feed "${RUNNER_TEMP}/patch-feed.json" "ghcr.io/${OWNER,,}/runr/sample-executor-patches:feed"

@@ -1,0 +1,97 @@
+# Pull requests and pushes to branches other than main (main runs publish.yml, which tests the same
+# way before it pushes anything): shellcheck and actionlint, the manifests (scripts/validate.sh),
+# the catalog and the patch feed built and checked against their schemas, and every version of
+# every runtime built and contract-tested (scripts/contract-test.sh, nothing pushed).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SHELLCHECK_VERSION: v0.11.0
+  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+
+jobs:
+  lint:
+    name: shellcheck + actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install shellcheck and actionlint (pinned, checksums verified)
+        run: |
+          curl -fsSL -o /tmp/shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          curl -fsSL -o /tmp/actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint
+      - name: shellcheck
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh
+      - name: actionlint
+        run: actionlint -color
+
+  validate:
+    name: Manifests, catalog, patch feed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tools
+      - name: The schemas are JSON Schemas
+        run: check-jsonschema --check-metaschema schema/runtime.schema.json schema/runtime-catalog.v1.json schema/patch-feed.v1.json
+      - name: scripts/validate.sh
+        run: scripts/validate.sh
+      - name: The catalog and the patch feed build
+        run: |
+          scripts/build-catalog.sh -o catalog.json
+          scripts/build-catalog.sh --feed -o patch-feed.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: catalog
+          path: |
+            catalog.json
+            patch-feed.json
+          retention-days: 7
+
+  matrix:
+    name: Runtime versions
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.matrix.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tools
+      - id: matrix
+        run: |
+          versions=$(python3 scripts/lib/runr_sample.py matrix)
+          echo "Versions: ${versions}"
+          echo "versions=${versions}" >> "$GITHUB_OUTPUT"
+
+  contract:
+    name: Contract test ${{ matrix.runtime }} ${{ matrix.version }}
+    needs: [validate, matrix]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tools
+      - name: scripts/contract-test.sh (build, start, call; no push)
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+          VERSION: ${{ matrix.version }}
+        run: scripts/contract-test.sh "$RUNTIME" "$VERSION"
