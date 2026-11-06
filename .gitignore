@@ -1,0 +1,23 @@
+# Python tools (pip install -r requirements.txt)
+.venv/
+__pycache__/
+*.pyc
+
+# Zig build output and caches (zig build in runtimes/sample-zig)
+.zig-cache/
+zig-cache/
+zig-out/
+
+# Local catalog and feed builds
+/catalog.json
+/patch-feed.json
+
+# Signing keys: never commit the private key (keys/README.md)
+*.key
+cosign.key
+
+# Editors and systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
