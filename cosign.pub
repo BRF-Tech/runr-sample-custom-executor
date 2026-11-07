@@ -1,3 +1,4 @@
-# Placeholder: replace this file with the cosign public key of your catalog and patch feed
-# (keys/README.md). RunR verifies their signatures with it; scripts/push-signed.sh refuses to
-# publish while this file holds no "BEGIN PUBLIC KEY" block.
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEGsoEO75k+3c38c8J/MkYOj+oCDKd
+v/At7FgUghliROqhfcfeN7B24AGZobOg6ANFLI2brOUvAVGCqF/saVZpXg==
+-----END PUBLIC KEY-----

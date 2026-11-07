@@ -53,7 +53,7 @@ schema/
   runtime-catalog.v1.json  the catalog payload
   patch-feed.v1.json    the patch feed (a copy from BRF-Tech/runr-runtimes)
 patches.json            this source's patch feed (empty to start with)
-cosign.pub              the public key of the catalog and the feed (a placeholder: keys/README.md)
+cosign.pub              the public key of this repository's catalog and feed (a fork replaces it: keys/README.md)
 .github/workflows/      ci.yml (pull requests), publish.yml (main, tags, weekly, by hand)
 ```
 
@@ -79,7 +79,7 @@ cosign.pub              the public key of the catalog and the feed (a placeholde
 4. **Your contacts.** Change the address in [SECURITY.md](SECURITY.md) and the copyright line in
    [LICENSE](LICENSE).
 5. Only for a signed catalog or patch feed: generate a key pair and replace
-   [`cosign.pub`](cosign.pub) ([keys/README.md](keys/README.md)).
+   [`cosign.pub`](cosign.pub), which holds this repository's own key ([keys/README.md](keys/README.md)).
 
 ## 2. Add a language
 
